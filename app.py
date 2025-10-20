@@ -6,7 +6,7 @@ import time
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Asset Correlation MVP",
+    page_title="Asset Correlation Dashboard",
     layout="wide"
 )
 
@@ -14,8 +14,7 @@ st.set_page_config(
 st.title('Interactive Asset Class Correlation Dashboard')
 
 # --- User Inputs ---
-API_KEY = st.text_input("Enter your Polygon.io API Key:", type="password")
-TICKERS = ["SPY", "IWM", "VEA", "VWO", "AGG", "GOVT", "GLD", "DBC", "VNQ", "BTC-USD"]
+# We removed the API key text box. The slider is now the main input.
 rolling_window = st.slider(
     'Select Rolling Window (Days)', 
     min_value=30, 
@@ -24,21 +23,23 @@ rolling_window = st.slider(
     step=10
 )
 
-# --- Data Fetching Function (FIXED) ---
+# --- Data Fetching Function ---
 @st.cache_data
-# FIX #1: We removed the '_status_element' argument.
-# This function is now "pure" and only returns data.
 def fetch_all_data(tickers, api_key):
     """
     Fetches historical data for a list of tickers, pausing between
     requests to respect the free plan's rate limit.
     """
     price_data = {}
+    
+    # We create a status message inside the function for the first load
+    status_text = st.empty()
+    
     for ticker in tickers:
-        # FIX #2: The line writing to the status element is REMOVED from the loop.
+        status_text.text(f"Fetching data for {ticker}...") 
         try:
             api_ticker = "X:BTCUSD" if ticker == "BTC-USD" else ticker
-            url = f"https.api.polygon.io/v2/aggs/ticker/{api_ticker}/range/1/day/2020-01-01/2025-09-19?adjusted=true&sort=asc&limit=50000&apiKey={api_key}"
+            url = f"https://api.polygon.io/v2/aggs/ticker/{api_ticker}/range/1/day/2020-01-01/2025-09-19?adjusted=true&sort=asc&limit=50000&apiKey={api_key}"
             response = requests.get(url)
             response.raise_for_status()
             data = response.json()
@@ -52,28 +53,30 @@ def fetch_all_data(tickers, api_key):
             time.sleep(13) 
             
         except requests.exceptions.RequestException as e:
-            # We can't write to st.error here, so we'll just return None
-            # and let the main app logic handle the error display.
-            print(f"Error fetching data for {ticker}: {e}") # Log to terminal
+            st.error(f"Error fetching data for {ticker}: {e}")
             return None
+            
+    status_text.empty() # Clear the "Fetching..." message
     return pd.DataFrame(price_data)
 
 # --- Main App Logic ---
-status_text = st.empty()
+TICKERS = ["SPY", "IWM", "VEA", "VWO", "AGG", "GOVT", "GLD", "DBC", "VNQ", "BTC-USD"]
 
-if API_KEY:
-    # FIX #3: We show a single "waiting" message *before* calling the cached function.
-    status_text.text("Fetching all asset data... This may take over 2 minutes on the first load. Please wait.")
+# Check if the secret key is provided
+if "POLYGON_API_KEY" in st.secrets:
+    API_KEY = st.secrets["POLYGON_API_KEY"]
     
-    # We call the simplified function.
+    # Fetch the data. This will be slow on the app's first-ever load.
     all_prices = fetch_all_data(TICKERS, API_KEY)
 
     if all_prices is not None and not all_prices.empty:
-        status_text.success("Data fetched successfully!")
+        st.success("Data loaded successfully!")
         
+        # --- Calculations (now happens *after* data is loaded) ---
         daily_returns = all_prices.pct_change().dropna()
         correlation_matrix = daily_returns.tail(rolling_window).corr()
 
+        # --- Display Heatmap ---
         st.subheader(f'Interactive {rolling_window}-Day Correlation Heatmap')
         fig = px.imshow(
             correlation_matrix,
@@ -85,6 +88,7 @@ if API_KEY:
         fig.update_layout(title_text=f'Asset Class Correlation ({rolling_window}-Day)', title_x=0.5)
         st.plotly_chart(fig, use_container_width=True)
 
+        # --- Display Pairs ---
         st.subheader(f'Top 5 Most & Least Correlated Pairs (Last {rolling_window} Days)')
         corr_pairs = correlation_matrix.unstack().sort_values(ascending=False)
         corr_pairs = corr_pairs[corr_pairs != 1.0].drop_duplicates()
@@ -97,7 +101,7 @@ if API_KEY:
             st.write("**Least Correlated:**")
             st.dataframe(corr_pairs.tail(5))
 
-    elif all_prices is None and API_KEY:
-        status_text.error("Data fetching failed. Check terminal for error (or check API key).")
+    else:
+        st.error("There was an error loading the data. The API key may be invalid or the service may be down.")
 else:
-    status_text.warning("Please enter your API key above to begin.")
+    st.error("App is not configured correctly. Missing API key secret.")
